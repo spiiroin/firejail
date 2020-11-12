@@ -1,0 +1,143 @@
+From 731ceb98ac01b3b57dfc16708601df1991e0f78f Mon Sep 17 00:00:00 2001
+From: Simo Piiroinen <simo.piiroinen@jolla.com>
+Date: Thu, 5 Nov 2020 18:52:29 +0200
+Subject: [PATCH] Add utility functions for handing comma separated lists
+
+A lot of profile options deal with manipulating strings containing
+comma separated list of things, using several strains of similar but
+not exactly the same code, duplicated for the purposes of processing
+command line arguments and parsing configuration files.
+
+Having utility functions available for handling such list strings can
+make higher level logic shorter, cleaner and function in more uniform
+manner.
+
+Signed-off-by: Simo Piiroinen <simo.piiroinen@jolla.com>
+---
+ src/firejail/firejail.h |  3 ++
+ src/firejail/profile.c  | 98 +++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 101 insertions(+)
+
+diff --git a/src/firejail/firejail.h b/src/firejail/firejail.h
+index 2bb8dd35..b8bdae88 100644
+--- a/src/firejail/firejail.h
++++ b/src/firejail/firejail.h
+@@ -449,6 +449,9 @@ int profile_check_line(char *ptr, int lineno, const char *fname);
+ // add a profile entry in cfg.profile list; use str to populate the list
+ void profile_add(char *str);
+ void profile_add_ignore(const char *str);
++char *profile_list_normalize(char *list);
++char *profile_list_compress(char *list);
++void profile_list_augment(char **list, const char *items);
+ 
+ // list.c
+ void list(void);
+diff --git a/src/firejail/profile.c b/src/firejail/profile.c
+index 8c29fe81..c04ab4c5 100644
+--- a/src/firejail/profile.c
++++ b/src/firejail/profile.c
+@@ -1748,3 +1748,101 @@ void profile_read(const char *fname) {
+ 	}
+ 	fclose(fp);
+ }
++
++char *profile_list_normalize(char *list)
++{
++	// remove redundant commas
++	// result is always shorter than original
++	// -> can do in-place
++
++	size_t i = 0;
++	size_t j = 0;
++	int c;
++	while( list[i] == ',' )
++		++i;
++	while( (c = list[i++]) ) {
++		if( c == ',' ) {
++			while( list[i] == ',' )
++				++i;
++			if( list[i] == 0 )
++				break;
++		}
++		list[j++] = c;
++	}
++	list[j] = 0;
++	return list;
++}
++
++char *profile_list_compress(char *list)
++{
++	/* ,a,,,b,,,c, -> a,b,c
++	 * a,,b,,,c,a  -> a,b,c
++	 * a,b,c,-a    -> b,c
++	 * a,b,c,-a,a  -> b,c,a
++	 */
++	profile_list_normalize(list);
++
++	// count elements: comma count + 1
++	size_t count = 1;
++	for (size_t i=0; list[i]; ++i ) {
++		if( list[i] == ',' )
++			++count;
++	}
++	// collect elements in array
++	char *in[count];
++	count = 0;
++	in[count++] = list;
++	for (size_t i=0; list[i]; ++i ) {
++		if( list[i] != ',' )
++			continue;
++		list[i] = 0;
++		in[count++] = list + i + 1;
++	}
++
++	// filter out duplicates, remove on "-name"
++	for( size_t i = 0; i < count; ++i ) {
++		char *item = in[i];
++
++		if( *item == '-' ) {
++			in[i] = 0;
++			++item;
++			for( size_t k = 0; k < i; ++k ) {
++				if( in[k] && !strcmp(in[k], item) ) {
++					in[k] = 0;
++					break;
++				}
++			}
++		}
++		else {
++			for( size_t k = 0; k < i; ++k ) {
++				if( in[k] && !strcmp(in[k], item) ) {
++					in[i] = 0;
++					break;
++				}
++			}
++		}
++	}
++	// copying back using in-place data works because the
++	// original order is retained ...
++	char *pos = list;
++	for( size_t i = 0; i < count; ++i ) {
++		char *item = in[i];
++		if( !item )
++			continue;
++		if( pos > list )
++			*pos++ = ',';
++		while( *item )
++			*pos++ = *item++;
++	}
++	*pos = 0;
++	return list;
++}
++
++void profile_list_augment(char **list, const char *items)
++{
++	char *tmp = 0;
++	if( asprintf(&tmp, "%s,%s", *list ?: "", items ?: "") < 0 )
++		errExit("asprintf");
++	free(*list);
++	*list = profile_list_compress(tmp);
++}
+-- 
+2.17.1
+
